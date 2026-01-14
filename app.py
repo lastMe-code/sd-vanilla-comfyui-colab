@@ -1,238 +1,181 @@
-import subprocess
-import threading
-import time
-import socket
-import uuid
-import requests
+import os, random, time, re, uuid
+import torch
+import numpy as np
+from PIL import Image
 import gradio as gr
-import os
-import signal
 
-# ===============================
-# CONFIG
-# ===============================
-COMFY_HOST = "127.0.0.1"
-COMFY_PORT = 8188
-COMFY_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
-COMFY_DIR = os.getcwd()
+from nodes import NODE_CLASS_MAPPINGS
 
-comfy_process = None
+CheckpointLoader = NODE_CLASS_MAPPINGS["CheckpointLoaderSimple"]()
+CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
+KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
+VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
+EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
+VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
 
-
-# ===============================
-# START COMFYUI
-# ===============================
-def start_comfyui():
-    global comfy_process
-    if comfy_process:
-        return
-
-    cmd = [
-        "python",
-        "main.py",
-        "--listen", COMFY_HOST,
-        "--port", str(COMFY_PORT),
-        "--dont-print-server"
-    ]
-
-    comfy_process = subprocess.Popen(
-        cmd,
-        cwd=COMFY_DIR,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        preexec_fn=os.setsid
+# === LOAD MODEL ===
+with torch.inference_mode():
+    model, clip, vae = CheckpointLoader.load_checkpoint(
+        "v1-5-pruned-emaonly.safetensors"
     )
 
+RESULT_DIR = "./results"
+os.makedirs(RESULT_DIR, exist_ok=True)
 
-def wait_for_comfyui(timeout=60):
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            with socket.create_connection((COMFY_HOST, COMFY_PORT), timeout=2):
-                return True
-        except:
-            time.sleep(1)
-    return False
-
-
-# ===============================
-# COMFYUI API
-# ===============================
-def submit_prompt(workflow):
-    r = requests.post(
-        f"{COMFY_URL}/prompt",
-        json={
-            "prompt": workflow,
-            "client_id": str(uuid.uuid4())
-        },
-        timeout=10
+def safe_path(prompt):
+    p = re.sub(r'[^a-zA-Z0-9_-]', '_', prompt)[:25]
+    return os.path.join(
+        RESULT_DIR, f"{p}_{uuid.uuid4().hex[:6]}.png"
     )
-    r.raise_for_status()
-    return r.json()["prompt_id"]
+
+@torch.inference_mode()
+def generate(data):
+    v = data["input"]
+
+    seed = int(v["seed"])
+    if seed == 0:
+        seed = random.randint(0, 2**63)
+
+    positive = CLIPTextEncode.encode(clip, v["positive"])[0]
+    negative = CLIPTextEncode.encode(clip, v["negative"])[0]
+
+    if v["init_image"] is None:
+        latent = EmptyLatentImage.generate(
+            v["width"], v["height"], batch_size=1
+        )[0]
+        denoise = 1.0
+    else:
+        image = torch.from_numpy(
+            np.array(v["init_image"]).astype(np.float32) / 255.0
+        )[None]
+        latent = VAEEncode.encode(vae, image)[0]
+        denoise = v["denoise"]
+
+    samples = KSampler.sample(
+        model,
+        seed,
+        v["steps"],
+        v["cfg"],
+        v["sampler"],
+        v["scheduler"],
+        positive,
+        negative,
+        latent,
+        denoise=denoise
+    )[0]
+
+    image = VAEDecode.decode(vae, samples)[0][0]
+    path = safe_path(v["positive"])
+    Image.fromarray((image.cpu().numpy()*255).astype(np.uint8)).save(path)
+
+    return path, path, seed
 
 
-def get_history(prompt_id):
-    r = requests.get(f"{COMFY_URL}/history/{prompt_id}", timeout=10)
-    r.raise_for_status()
-    return r.json()
+# ================= UI =================
 
+ASPECTS = {
+    "1:1 (1024x1024)": (1024,1024),
+    "16:9 (1280x720)": (1280,720),
+    "9:16 (720x1280)": (720,1280),
+    "4:3 (1152x864)": (1152,864),
+    "3:4 (864x1152)": (864,1152),
+}
 
-def get_image(filename, subfolder, folder_type):
-    r = requests.get(
-        f"{COMFY_URL}/view",
-        params={
-            "filename": filename,
-            "subfolder": subfolder,
-            "type": folder_type
-        }
-    )
-    r.raise_for_status()
-    return r.content
+CSS = ".gradio-container { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }"
 
+with gr.Blocks(theme=gr.themes.Soft(), css=CSS) as demo:
+    gr.HTML("""
+    <div style="text-align:center;margin:20px">
+      <h1>SD Vanilla – ComfyUI</h1>
+      <p>Stable Diffusion 1.5 • Colab Optimized</p>
+    </div>
+    """)
 
-# ===============================
-# WORKFLOW
-# ===============================
-def build_workflow(prompt, width, height, steps, cfg, seed):
-    ckpt = os.listdir("models/checkpoints")[0]
-
-    return {
-        "1": {
-            "class_type": "CheckpointLoaderSimple",
-            "inputs": {"ckpt_name": ckpt}
-        },
-        "2": {
-            "class_type": "EmptyLatentImage",
-            "inputs": {
-                "width": width,
-                "height": height,
-                "batch_size": 1
-            }
-        },
-        "3": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": ["1", 1],
-                "text": prompt
-            }
-        },
-        "4": {
-            "class_type": "CLIPTextEncode",
-            "inputs": {
-                "clip": ["1", 1],
-                "text": "blurry, low quality, distorted"
-            }
-        },
-        "5": {
-            "class_type": "KSampler",
-            "inputs": {
-                "model": ["1", 0],
-                "positive": ["3", 0],
-                "negative": ["4", 0],
-                "latent_image": ["2", 0],
-                "sampler_name": "euler",
-                "scheduler": "normal",
-                "steps": steps,
-                "cfg": cfg,
-                "seed": seed,
-                "denoise": 1
-            }
-        },
-        "6": {
-            "class_type": "VAEDecode",
-            "inputs": {
-                "samples": ["5", 0],
-                "vae": ["1", 2]
-            }
-        },
-        "7": {
-            "class_type": "SaveImage",
-            "inputs": {
-                "images": ["6", 0],
-                "filename_prefix": "gradio"
-            }
-        }
-    }
-
-
-# ===============================
-# GENERATE
-# ===============================
-def generate(prompt, width, height, steps, cfg, seed):
-    try:
-        workflow = build_workflow(prompt, width, height, steps, cfg, seed)
-        prompt_id = submit_prompt(workflow)
-
-        while True:
-            history = get_history(prompt_id)
-            if prompt_id in history:
-                outputs = history[prompt_id]["outputs"]
-                for node in outputs.values():
-                    if "images" in node:
-                        img = node["images"][0]
-                        return get_image(
-                            img["filename"],
-                            img["subfolder"],
-                            img["type"]
-                        )
-            time.sleep(1)
-
-    except Exception as e:
-        return f"ERROR: {e}"
-
-
-# ===============================
-# MAIN
-# ===============================
-if __name__ == "__main__":
-
-    threading.Thread(target=start_comfyui, daemon=True).start()
-
-    if not wait_for_comfyui():
-        raise RuntimeError("ComfyUI gagal dijalankan")
-
-    with gr.Blocks(css="""
-          body { background-color: #0f0f11; color: #e5e5e5; }
-         .gr-box { border-radius: 14px !important; }
-    """) as demo:
-
-        gr.Markdown(
-            "# 🎨 ComfyUI – Clean Gradio UI\n"
-            "**Fast · Stable · Colab Ready**"
-        )
-
-        with gr.Row():
-
-            with gr.Column(scale=1):
-                with gr.Group():
-                    gr.Markdown("### ✏️ Prompt")
-                    prompt = gr.Textbox(
-                        lines=4,
-                        placeholder="Describe your image...",
-                        value="a realistic portrait photo, cinematic lighting"
-                    )
-
-                with gr.Group():
-                    gr.Markdown("### 🖼️ Image Size")
-                    width = gr.Slider(512, 1024, 768, step=64, label="Width")
-                    height = gr.Slider(512, 1024, 768, step=64, label="Height")
-
-                with gr.Accordion("⚙️ Advanced Settings", open=False):
-                    steps = gr.Slider(10, 50, 20, label="Steps")
-                    cfg = gr.Slider(1, 12, 7, label="CFG Scale")
-                    seed = gr.Number(value=-1, label="Seed (-1 Random)")
-
-                generate_btn = gr.Button("🚀 Generate", variant="primary")
-
-            with gr.Column(scale=1):
-                with gr.Group():
-                    gr.Markdown("### 🖼️ Output")
-                    output = gr.Image(type="pil", height=512)
-
-            generate_btn.click(
-                generate,
-                inputs=[prompt, width, height, steps, cfg, seed],
-                outputs=output
+    with gr.Row():
+        with gr.Column():
+            positive = gr.Textbox(
+                label="Positive Prompt", lines=5
+            )
+            negative = gr.Textbox(
+                label="Negative Prompt", lines=3
             )
 
-    demo.launch(share=True)
+            with gr.Row():
+                aspect = gr.Dropdown(
+                    ASPECTS.keys(),
+                    value="1:1 (1024x1024)",
+                    label="Aspect Ratio"
+                )
+                seed = gr.Number(
+                    value=0, label="Seed (0 = random)", precision=0
+                )
+                steps = gr.Slider(
+                    5, 50, value=20, step=1, label="Steps"
+                )
+
+            with gr.Accordion("Advanced Settings", open=False):
+                cfg = gr.Slider(
+                    1, 15, value=7, step=0.5, label="CFG"
+                )
+                denoise = gr.Slider(
+                    0.1, 1.0, value=0.7, step=0.05,
+                    label="Denoise (Img2Img)"
+                )
+                sampler = gr.Dropdown(
+                    ["euler","euler_ancestral","dpmpp_2m","dpmpp_sde"],
+                    value="euler",
+                    label="Sampler"
+                )
+                scheduler = gr.Dropdown(
+                    ["normal","karras","simple"],
+                    value="karras",
+                    label="Scheduler"
+                )
+                init_image = gr.Image(
+                    label="Init Image (optional)",
+                    type="numpy"
+                )
+
+            run = gr.Button("🚀 Generate", variant="primary")
+
+        with gr.Column():
+            download = gr.File(label="Download Image")
+            output = gr.Image(label="Result", height=480)
+            used_seed = gr.Textbox(
+                label="Seed Used",
+                interactive=False,
+                show_copy_button=True
+            )
+
+    def ui_call(
+        pos, neg, aspect, seed, steps,
+        cfg, denoise, sampler, scheduler, init_image
+    ):
+        w,h = ASPECTS[aspect]
+        return generate({
+            "input": {
+                "positive": pos,
+                "negative": neg,
+                "width": w,
+                "height": h,
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "denoise": denoise,
+                "sampler": sampler,
+                "scheduler": scheduler,
+                "init_image": init_image
+            }
+        })
+
+    run.click(
+        fn=ui_call,
+        inputs=[
+            positive, negative, aspect, seed,
+            steps, cfg, denoise, sampler,
+            scheduler, init_image
+        ],
+        outputs=[download, output, used_seed]
+    )
+
+demo.launch(share=True)
