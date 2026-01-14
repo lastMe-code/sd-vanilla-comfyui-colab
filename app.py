@@ -192,8 +192,8 @@ if __name__ == "__main__":
         raise RuntimeError("ComfyUI gagal dijalankan")
 
     with gr.Blocks(css="""
-        body { background-color: #0f0f11; color: #e5e5e5; }
-        .gr-box { border-radius: 14px !important; }
+          body { background-color: #0f0f11; color: #e5e5e5; }
+         .gr-box { border-radius: 14px !important; }
     """) as demo:
 
         gr.Markdown(
