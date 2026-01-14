@@ -1,181 +1,147 @@
-import os, random, time, re, uuid
-import torch
-import numpy as np
-from PIL import Image
 import gradio as gr
+import torch
+import sys
+import os
+from PIL import Image
+import numpy as np
 
-from nodes import NODE_CLASS_MAPPINGS
+sys.path.append(os.getcwd())
 
-CheckpointLoader = NODE_CLASS_MAPPINGS["CheckpointLoaderSimple"]()
-CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
-KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
-VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
-EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
-VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
+import comfy.model_management as mm
+from nodes import (
+    KSampler,
+    EmptyLatentImage,
+    CLIPTextEncode,
+    VAEDecode,
+    VAEEncode,
+    UNETLoader,
+    CLIPLoader,
+    VAELoader,
+)
 
-# === LOAD MODEL ===
-with torch.inference_mode():
-    model, clip, vae = CheckpointLoader.load_checkpoint(
-        "v1-5-pruned-emaonly.safetensors"
-    )
+mm.set_vram_state(mm.VRAMState.NORMAL)
 
-RESULT_DIR = "./results"
-os.makedirs(RESULT_DIR, exist_ok=True)
+# =====================
+# Load Models
+# =====================
+unet = UNETLoader().load_unet(
+    "sd15_unet.safetensors",
+    device="cuda"
+)[0]
 
-def safe_path(prompt):
-    p = re.sub(r'[^a-zA-Z0-9_-]', '_', prompt)[:25]
-    return os.path.join(
-        RESULT_DIR, f"{p}_{uuid.uuid4().hex[:6]}.png"
-    )
+clip = CLIPLoader().load_clip(
+    "clip_vit_l.safetensors",
+    type="sd15"
+)[0]
 
-@torch.inference_mode()
-def generate(data):
-    v = data["input"]
+vae = VAELoader().load_vae(
+    "vae_mse.safetensors"
+)[0]
 
-    seed = int(v["seed"])
-    if seed == 0:
-        seed = random.randint(0, 2**63)
+# =====================
+# TXT2IMG
+# =====================
+def txt2img(prompt, steps, cfg, sampler, seed, width, height):
+    torch.manual_seed(int(seed))
 
-    positive = CLIPTextEncode.encode(clip, v["positive"])[0]
-    negative = CLIPTextEncode.encode(clip, v["negative"])[0]
+    positive = CLIPTextEncode().encode(clip, prompt)[0]
+    negative = CLIPTextEncode().encode(clip, "")[0]
 
-    if v["init_image"] is None:
-        latent = EmptyLatentImage.generate(
-            v["width"], v["height"], batch_size=1
-        )[0]
-        denoise = 1.0
-    else:
-        image = torch.from_numpy(
-            np.array(v["init_image"]).astype(np.float32) / 255.0
-        )[None]
-        latent = VAEEncode.encode(vae, image)[0]
-        denoise = v["denoise"]
+    latent = EmptyLatentImage().generate(width, height, batch_size=1)[0]
 
-    samples = KSampler.sample(
-        model,
-        seed,
-        v["steps"],
-        v["cfg"],
-        v["sampler"],
-        v["scheduler"],
-        positive,
-        negative,
-        latent,
-        denoise=denoise
+    samples = KSampler().sample(
+        unet, seed, steps, cfg,
+        sampler, "normal",
+        positive, negative,
+        latent, denoise=1.0
     )[0]
 
-    image = VAEDecode.decode(vae, samples)[0][0]
-    path = safe_path(v["positive"])
-    Image.fromarray((image.cpu().numpy()*255).astype(np.uint8)).save(path)
+    image = VAEDecode().decode(vae, samples)[0]
+    return image
 
-    return path, path, seed
+# =====================
+# IMG2IMG
+# =====================
+def img2img(image, prompt, denoise, steps, cfg, sampler, seed):
+    torch.manual_seed(int(seed))
 
+    image = image.convert("RGB")
+    image = np.array(image).astype(np.float32) / 255.0
+    image = torch.from_numpy(image)[None,]
 
-# ================= UI =================
+    latent = VAEEncode().encode(vae, image)[0]
 
-ASPECTS = {
-    "1:1 (1024x1024)": (1024,1024),
-    "16:9 (1280x720)": (1280,720),
-    "9:16 (720x1280)": (720,1280),
-    "4:3 (1152x864)": (1152,864),
-    "3:4 (864x1152)": (864,1152),
-}
+    positive = CLIPTextEncode().encode(clip, prompt)[0]
+    negative = CLIPTextEncode().encode(clip, "")[0]
 
-CSS = ".gradio-container { font-family: -apple-system, BlinkMacSystemFont, sans-serif; }"
+    samples = KSampler().sample(
+        unet, seed, steps, cfg,
+        sampler, "normal",
+        positive, negative,
+        latent, denoise=denoise
+    )[0]
 
-with gr.Blocks(theme=gr.themes.Soft(), css=CSS) as demo:
-    gr.HTML("""
-    <div style="text-align:center;margin:20px">
-      <h1>SD Vanilla – ComfyUI</h1>
-      <p>Stable Diffusion 1.5 • Colab Optimized</p>
-    </div>
-    """)
+    result = VAEDecode().decode(vae, samples)[0]
+    return result
 
-    with gr.Row():
-        with gr.Column():
-            positive = gr.Textbox(
-                label="Positive Prompt", lines=5
+# =====================
+# UI
+# =====================
+with gr.Blocks(title="SD Vanilla ComfyUI Colab") as demo:
+    gr.Markdown("## 🎨 SD Vanilla – TXT2IMG & IMG2IMG")
+
+    with gr.Tab("TXT2IMG"):
+        prompt = gr.Textbox(label="Prompt", lines=3)
+
+        with gr.Row():
+            steps = gr.Slider(1, 60, 28, label="Steps")
+            cfg = gr.Slider(1, 15, 7, label="CFG")
+
+        with gr.Row():
+            sampler = gr.Dropdown(
+                ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde"],
+                value="euler",
+                label="Sampler"
             )
-            negative = gr.Textbox(
-                label="Negative Prompt", lines=3
-            )
+            seed = gr.Number(123456, label="Seed")
 
-            with gr.Row():
-                aspect = gr.Dropdown(
-                    ASPECTS.keys(),
-                    value="1:1 (1024x1024)",
-                    label="Aspect Ratio"
-                )
-                seed = gr.Number(
-                    value=0, label="Seed (0 = random)", precision=0
-                )
-                steps = gr.Slider(
-                    5, 50, value=20, step=1, label="Steps"
-                )
+        with gr.Row():
+            width = gr.Slider(256, 768, 512, step=64)
+            height = gr.Slider(256, 768, 512, step=64)
 
-            with gr.Accordion("Advanced Settings", open=False):
-                cfg = gr.Slider(
-                    1, 15, value=7, step=0.5, label="CFG"
-                )
-                denoise = gr.Slider(
-                    0.1, 1.0, value=0.7, step=0.05,
-                    label="Denoise (Img2Img)"
-                )
-                sampler = gr.Dropdown(
-                    ["euler","euler_ancestral","dpmpp_2m","dpmpp_sde"],
-                    value="euler",
-                    label="Sampler"
-                )
-                scheduler = gr.Dropdown(
-                    ["normal","karras","simple"],
-                    value="karras",
-                    label="Scheduler"
-                )
-                init_image = gr.Image(
-                    label="Init Image (optional)",
-                    type="numpy"
-                )
+        gen = gr.Button("Generate")
+        out = gr.Image()
 
-            run = gr.Button("🚀 Generate", variant="primary")
+        gen.click(
+            txt2img,
+            [prompt, steps, cfg, sampler, seed, width, height],
+            out
+        )
 
-        with gr.Column():
-            download = gr.File(label="Download Image")
-            output = gr.Image(label="Result", height=480)
-            used_seed = gr.Textbox(
-                label="Seed Used",
-                interactive=False,
-                show_copy_button=True
+    with gr.Tab("IMG2IMG"):
+        input_img = gr.Image(type="pil", label="Input Image")
+        prompt2 = gr.Textbox(label="Prompt", lines=3)
+
+        with gr.Row():
+            denoise = gr.Slider(0.1, 1.0, 0.6, label="Denoise")
+            steps2 = gr.Slider(1, 60, 28, label="Steps")
+
+        with gr.Row():
+            cfg2 = gr.Slider(1, 15, 7, label="CFG")
+            sampler2 = gr.Dropdown(
+                ["euler", "euler_ancestral", "dpmpp_2m"],
+                value="euler"
             )
 
-    def ui_call(
-        pos, neg, aspect, seed, steps,
-        cfg, denoise, sampler, scheduler, init_image
-    ):
-        w,h = ASPECTS[aspect]
-        return generate({
-            "input": {
-                "positive": pos,
-                "negative": neg,
-                "width": w,
-                "height": h,
-                "seed": seed,
-                "steps": steps,
-                "cfg": cfg,
-                "denoise": denoise,
-                "sampler": sampler,
-                "scheduler": scheduler,
-                "init_image": init_image
-            }
-        })
+        seed2 = gr.Number(123456, label="Seed")
 
-    run.click(
-        fn=ui_call,
-        inputs=[
-            positive, negative, aspect, seed,
-            steps, cfg, denoise, sampler,
-            scheduler, init_image
-        ],
-        outputs=[download, output, used_seed]
-    )
+        run2 = gr.Button("Generate IMG2IMG")
+        out2 = gr.Image()
+
+        run2.click(
+            img2img,
+            [input_img, prompt2, denoise, steps2, cfg2, sampler2, seed2],
+            out2
+        )
 
 demo.launch(share=True)
