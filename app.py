@@ -1,148 +1,151 @@
-import gradio as gr
+import os, random, uuid, time
 import torch
-import sys
-import os
-from PIL import Image
 import numpy as np
+from PIL import Image
+import gradio as gr
 
-sys.path.append(os.getcwd())
+from nodes import NODE_CLASS_MAPPINGS
 
-import comfy.model_management as mm
-from nodes import (
-    KSampler,
-    EmptyLatentImage,
-    CLIPTextEncode,
-    VAEDecode,
-    VAEEncode,
-    UNETLoader,
-    CLIPLoader,
-    VAELoader,
-)
 
-mm.set_vram_state(mm.VRAMState.NORMAL)
-mm.set_vram_to(mm.VRAMState.NORMAL)
+# =========================
+# Load Nodes
+# =========================
+UNETLoader = NODE_CLASS_MAPPINGS["UNETLoader"]()
+CLIPLoader = NODE_CLASS_MAPPINGS["CLIPLoader"]()
+VAELoader = NODE_CLASS_MAPPINGS["VAELoader"]()
+CLIPTextEncode = NODE_CLASS_MAPPINGS["CLIPTextEncode"]()
+KSampler = NODE_CLASS_MAPPINGS["KSampler"]()
+VAEDecode = NODE_CLASS_MAPPINGS["VAEDecode"]()
+VAEEncode = NODE_CLASS_MAPPINGS["VAEEncode"]()
+EmptyLatentImage = NODE_CLASS_MAPPINGS["EmptyLatentImage"]()
 
-# =====================
-# Load Models
-# =====================
-unet = UNETLoader().load_unet(
-    "sd15_unet.safetensors",
-    device="cuda"
-)[0]
 
-clip = CLIPLoader().load_clip(
-    "clip_vit_l.safetensors",
-    type="sd15"
-)[0]
+# =========================
+# Load SD 1.5
+# =========================
+with torch.inference_mode():
+    unet = UNETLoader.load_unet("sd15-unet.safetensors", "default")[0]
+    clip = CLIPLoader.load_clip("clip-vit-l14.safetensors")[0]
+    vae = VAELoader.load_vae("sd15-vae.safetensors")[0]
 
-vae = VAELoader().load_vae(
-    "vae_mse.safetensors"
-)[0]
 
-# =====================
-# TXT2IMG
-# =====================
-def txt2img(prompt, steps, cfg, sampler, seed, width, height):
-    torch.manual_seed(int(seed))
+# =========================
+# Output
+# =========================
+OUT_DIR = "results"
+os.makedirs(OUT_DIR, exist_ok=True)
 
-    positive = CLIPTextEncode().encode(clip, prompt)[0]
-    negative = CLIPTextEncode().encode(clip, "")[0]
 
-    latent = EmptyLatentImage().generate(width, height, batch_size=1)[0]
+def save_image(img):
+    name = f"{uuid.uuid4().hex[:8]}.png"
+    path = os.path.join(OUT_DIR, name)
+    Image.fromarray(img).save(path)
+    return path
 
-    samples = KSampler().sample(
-        unet, seed, steps, cfg,
-        sampler, "normal",
-        positive, negative,
-        latent, denoise=1.0
+
+# =========================
+# Core Generate
+# =========================
+@torch.inference_mode()
+def generate(
+    prompt,
+    negative,
+    width,
+    height,
+    steps,
+    cfg,
+    denoise,
+    seed,
+    init_image=None
+):
+    if seed == 0:
+        seed = random.randint(0, 2**63)
+
+    pos = CLIPTextEncode.encode(clip, prompt)[0]
+    neg = CLIPTextEncode.encode(clip, negative)[0]
+
+    if init_image is None:
+        latent = EmptyLatentImage.generate(width, height)[0]
+    else:
+        img = torch.from_numpy(init_image).float() / 255.0
+        img = img.unsqueeze(0)
+        latent = VAEEncode.encode(vae, img)[0]
+
+    samples = KSampler.sample(
+        unet,
+        seed,
+        steps,
+        cfg,
+        "euler",
+        "simple",
+        pos,
+        neg,
+        latent,
+        denoise=denoise
     )[0]
 
-    image = VAEDecode().decode(vae, samples)[0]
-    return image
+    decoded = VAEDecode.decode(vae, samples)[0]
+    img = (decoded[0].cpu().numpy() * 255).astype(np.uint8)
 
-# =====================
-# IMG2IMG
-# =====================
-def img2img(image, prompt, denoise, steps, cfg, sampler, seed):
-    torch.manual_seed(int(seed))
+    return save_image(img), seed
 
-    image = image.convert("RGB")
-    image = np.array(image).astype(np.float32) / 255.0
-    image = torch.from_numpy(image)[None,]
 
-    latent = VAEEncode().encode(vae, image)[0]
+# =========================
+# Gradio
+# =========================
+def ui_generate(
+    prompt,
+    negative,
+    image,
+    steps,
+    cfg,
+    denoise,
+    seed
+):
+    init = None
+    if image is not None:
+        init = np.array(image)
 
-    positive = CLIPTextEncode().encode(clip, prompt)[0]
-    negative = CLIPTextEncode().encode(clip, "")[0]
+    path, used_seed = generate(
+        prompt,
+        negative,
+        512,
+        512,
+        steps,
+        cfg,
+        denoise,
+        seed,
+        init
+    )
 
-    samples = KSampler().sample(
-        unet, seed, steps, cfg,
-        sampler, "normal",
-        positive, negative,
-        latent, denoise=denoise
-    )[0]
+    return path, path, used_seed
 
-    result = VAEDecode().decode(vae, samples)[0]
-    return result
 
-# =====================
-# UI
-# =====================
-with gr.Blocks(title="SD Vanilla ComfyUI Colab") as demo:
-    gr.Markdown("## 🎨 SD Vanilla – TXT2IMG & IMG2IMG")
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("## Stable Diffusion 1.5 (txt2img + img2img)")
 
-    with gr.Tab("TXT2IMG"):
-        prompt = gr.Textbox(label="Prompt", lines=3)
+    with gr.Row():
+        with gr.Column():
+            prompt = gr.Textbox("a cinematic portrait, ultra detailed", label="Prompt")
+            negative = gr.Textbox("low quality, blurry", label="Negative")
+            image = gr.Image(type="numpy", label="Image (optional img2img)")
 
-        with gr.Row():
-            steps = gr.Slider(1, 60, 28, label="Steps")
-            cfg = gr.Slider(1, 15, 7, label="CFG")
+            steps = gr.Slider(1, 50, 20, step=1, label="Steps")
+            cfg = gr.Slider(1, 15, 7, step=0.5, label="CFG")
+            denoise = gr.Slider(0.1, 1.0, 1.0, step=0.05, label="Denoise")
+            seed = gr.Number(0, precision=0, label="Seed (0=random)")
 
-        with gr.Row():
-            sampler = gr.Dropdown(
-                ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde"],
-                value="euler",
-                label="Sampler"
-            )
-            seed = gr.Number(123456, label="Seed")
+            btn = gr.Button("🚀 Generate")
 
-        with gr.Row():
-            width = gr.Slider(256, 768, 512, step=64)
-            height = gr.Slider(256, 768, 512, step=64)
+        with gr.Column():
+            file = gr.File(label="Download")
+            img = gr.Image()
+            used_seed = gr.Textbox(label="Seed Used")
 
-        gen = gr.Button("Generate")
-        out = gr.Image()
-
-        gen.click(
-            txt2img,
-            [prompt, steps, cfg, sampler, seed, width, height],
-            out
-        )
-
-    with gr.Tab("IMG2IMG"):
-        input_img = gr.Image(type="pil", label="Input Image")
-        prompt2 = gr.Textbox(label="Prompt", lines=3)
-
-        with gr.Row():
-            denoise = gr.Slider(0.1, 1.0, 0.6, label="Denoise")
-            steps2 = gr.Slider(1, 60, 28, label="Steps")
-
-        with gr.Row():
-            cfg2 = gr.Slider(1, 15, 7, label="CFG")
-            sampler2 = gr.Dropdown(
-                ["euler", "euler_ancestral", "dpmpp_2m"],
-                value="euler"
-            )
-
-        seed2 = gr.Number(123456, label="Seed")
-
-        run2 = gr.Button("Generate IMG2IMG")
-        out2 = gr.Image()
-
-        run2.click(
-            img2img,
-            [input_img, prompt2, denoise, steps2, cfg2, sampler2, seed2],
-            out2
-        )
+    btn.click(
+        ui_generate,
+        [prompt, negative, image, steps, cfg, denoise, seed],
+        [file, img, used_seed]
+    )
 
 demo.launch(share=True)
