@@ -1,49 +1,50 @@
-# SD Vanilla ComfyUI Colab
+# SD Vanilla ComfyUI Colab 🚀
 
-Stable Diffusion 1.5 (Vanilla) running on **ComfyUI backend** with a **Gradio UI frontend**.  
-Optimized for **Google Colab**, **low VRAM GPUs**, and **mobile/tablet users**.
+![Stable Diffusion](https://img.shields.io/badge/Stable_Diffusion-1.5-blue)
+![ComfyUI](https://img.shields.io/badge/ComfyUI-Latest-green)
+![Gradio](https://img.shields.io/badge/Gradio-UI-orange)
+![Colab](https://img.shields.io/badge/Google-Colab-yellow)
 
-This project is inspired by NeuralFalconYT-style Colab setup, but with:
-- More unlocked UI controls
-- Stable SD 1.5 workflow
-- Clean and simple structure
+Stable Diffusion 1.5 **Vanilla** using **ComfyUI Nodes API** + **Gradio UI**  
+Optimized for **Google Colab** and **Mobile / Tablet users**.
+
+✅ txt2img  
+✅ img2img  
+✅ No checkpoint loader  
+✅ No VRAM hacks  
+✅ Compatible with latest ComfyUI  
 
 ---
 
 ## ✨ Features
 
-- ✅ Stable Diffusion 1.5 (vanilla)
-- ✅ ComfyUI running in background
-- ✅ Gradio web UI (mobile friendly)
-- ✅ Text-to-Image
-- ✅ Image-to-Image (via denoise)
-- ✅ Custom resolution, steps, CFG
-- ✅ Sampler & scheduler selection
-- ✅ Random or fixed seed
-- ✅ Safe for Google Colab GPU (T4 / L4 / P100)
+- Stable Diffusion 1.5 (vanilla)
+- Text-to-Image
+- Image-to-Image
+- Gradio Web UI
+- Mobile friendly
+- Safe for Colab T4 / L4
+- NeuralFalcon-style node loading
 
 ---
 
-## 🧰 Requirements
+## 🚀 One-Click Colab
 
-- Google Colab account
-- GPU runtime enabled
-- Internet connection
+Open directly in Google Colab:
 
----
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](
+https://colab.research.google.com/github/USERNAME/sd-vanilla-comfyui-colab/blob/main/colab.ipynb
+)
 
-## 🚀 Installation (Google Colab)
-
-### 1️⃣ Enable GPU
-In Colab:
-- Runtime → Change runtime type
-- Hardware accelerator → **GPU**
+> Ganti `USERNAME` dengan username GitHub kamu.
 
 ---
 
-### 2️⃣ Install ComfyUI
+## 🧱 Manual Installation (Colab)
 
+### CELL 1 — Install & Models
 ```bash
-cd /content
 git clone https://github.com/comfyanonymous/ComfyUI
 cd ComfyUI
+wget https://raw.githubusercontent.com/USERNAME/sd-vanilla-comfyui-colab/main/app.py
+pip install -r requirements.txt
