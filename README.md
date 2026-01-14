@@ -36,7 +36,7 @@ Open directly in Google Colab:
 https://colab.research.google.com/github/USERNAME/sd-vanilla-comfyui-colab/blob/main/colab.ipynb
 )
 
-> Ganti `USERNAME` dengan username GitHub kamu.
+> `lastMe-code`
 
 ---
 
