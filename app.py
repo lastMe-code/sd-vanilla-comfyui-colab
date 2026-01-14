@@ -19,8 +19,8 @@ from nodes import (
     VAELoader,
 )
 
-if hasattr(mm, "set_vram_to"):
-    mm.set_vram_to(mm.VRAMState.NORMAL)
+mm.set_vram_state(mm.VRAMState.NORMAL)
+mm.set_vram_to(mm.VRAMState.NORMAL)
 
 # =====================
 # Load Models
