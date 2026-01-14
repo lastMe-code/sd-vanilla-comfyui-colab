@@ -46,5 +46,5 @@ https://colab.research.google.com/github/USERNAME/sd-vanilla-comfyui-colab/blob/
 ```bash
 git clone https://github.com/comfyanonymous/ComfyUI
 cd ComfyUI
-wget https://raw.githubusercontent.com/USERNAME/sd-vanilla-comfyui-colab/main/app.py
+wget https://raw.githubusercontent.com/lastMe-code/sd-vanilla-comfyui-colab/main/app.py
 pip install -r requirements.txt
