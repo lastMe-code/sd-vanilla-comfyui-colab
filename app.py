@@ -192,8 +192,8 @@ if __name__ == "__main__":
         raise RuntimeError("ComfyUI gagal dijalankan")
 
     with gr.Blocks(css="""
-    body { background-color: #0f0f11; color: #e5e5e5; }
-    .gr-box { border-radius: 14px !important; }
+        body { background-color: #0f0f11; color: #e5e5e5; }
+        .gr-box { border-radius: 14px !important; }
     """) as demo:
 
         gr.Markdown(
@@ -229,10 +229,10 @@ if __name__ == "__main__":
                     gr.Markdown("### 🖼️ Output")
                     output = gr.Image(type="pil", height=512)
 
-        generate_btn.click(
-            generate,
-            inputs=[prompt, width, height, steps, cfg, seed],
-            outputs=output
-        )
+            generate_btn.click(
+                generate,
+                inputs=[prompt, width, height, steps, cfg, seed],
+                outputs=output
+            )
 
     demo.launch(share=True)
