@@ -156,7 +156,7 @@ def build_workflow(prompt, width, height, steps, cfg, seed):
 
 
 # ===============================
-# GENERATE FUNCTION
+# GENERATE
 # ===============================
 def generate(prompt, width, height, steps, cfg, seed):
     try:
@@ -196,13 +196,13 @@ if __name__ == "__main__":
     .gr-box { border-radius: 14px !important; }
     """) as demo:
 
-        gr.Markdown("""
-        # 🎨 ComfyUI – Clean Gradio UI  
-        **Fast · Stable · Colab Ready**
-        """)
+        gr.Markdown(
+            "# 🎨 ComfyUI – Clean Gradio UI\n"
+            "**Fast · Stable · Colab Ready**"
+        )
 
         with gr.Row():
-            # LEFT
+
             with gr.Column(scale=1):
                 with gr.Group():
                     gr.Markdown("### ✏️ Prompt")
@@ -224,7 +224,6 @@ if __name__ == "__main__":
 
                 generate_btn = gr.Button("🚀 Generate", variant="primary")
 
-            # RIGHT
             with gr.Column(scale=1):
                 with gr.Group():
                     gr.Markdown("### 🖼️ Output")
